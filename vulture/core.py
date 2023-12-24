@@ -1,5 +1,5 @@
 import ast
-from fnmatch import fnmatch, fnmatchcase
+from fnmatch import fnmatch, fnmatchcase, translate as fnmatch_translate
 from pathlib import Path
 import pkgutil
 import re
@@ -53,9 +53,17 @@ def _is_special_name(name):
     return name.startswith("__") and name.endswith("__")
 
 
-def _match(name, patterns, case=True):
-    func = fnmatchcase if case else fnmatch
-    return any(func(name, pattern) for pattern in patterns)
+def _match(name, patterns, case=True, regex=False):
+    if regex:
+        # 0 flag equals no-op for re.match
+        case_flag = re.IGNORECASE if not case else 0
+        return any(
+            re.match(pattern, str(name), flags=case_flag)
+            for pattern in patterns
+        )
+    else:
+        func = fnmatchcase if case else fnmatch
+        return any(func(name, pattern) for pattern in patterns)
 
 
 def _is_test_file(filename):
@@ -256,16 +264,21 @@ class Vulture(ast.NodeVisitor):
             except SyntaxError as err:
                 handle_syntax_error(err)
 
-    def scavenge(self, paths, exclude=None):
+    def scavenge(self, paths, exclude=None, regex=False):
         def prepare_pattern(pattern):
             if not any(char in pattern for char in "*?["):
                 pattern = f"*{pattern}*"
             return pattern
 
-        exclude = [prepare_pattern(pattern) for pattern in (exclude or [])]
+        # Red path: existing code calling `scavenge` from public API
+        use_regex = False
+        if not regex:
+            exclude = [prepare_pattern(pat) for pat in (exclude or [])]
+            exclude = [fnmatch_translate(pat) for pat in (exclude or [])]
+            use_regex = True
 
         def exclude_path(path):
-            return _match(path, exclude, case=False)
+            return _match(path, exclude, case=False, regex=use_regex)
 
         paths = [Path(path) for path in paths]
 
