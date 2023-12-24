@@ -1,6 +1,8 @@
 import pathlib
+import re
 import subprocess
 import sys
+from typing import Union
 
 import pytest
 
@@ -34,6 +36,35 @@ def check_unreachable(v, lineno, size, name):
     assert item.first_lineno == lineno
     assert item.size == size
     assert item.name == name
+
+
+def normalize_group_numbers(regex: Union[str, re.Pattern]) -> str:
+    """
+    This function normalizes group numbers in a regular expression.
+
+    It identifies all group numbers (strings starting with 'g' followed by
+    digits, preceded by '?P<'), maps them to new group numbers ('g0', 'g1',
+    'g2', etc., in the order they appear), and replaces the old group numbers
+    with the new ones in the regex. This is useful for comparing regexes with
+    the same structure but different group numbers.
+
+    Note: It assumes group numbers are unique within each regex pattern. If the
+    same group number is used for different groups within a single regex
+    pattern, this function might not work correctly.
+    """
+    if isinstance(regex, re.Pattern):
+        regex = regex.pattern
+
+    group_numbers = re.findall(r"(?<=\?P<)g\d+", regex)
+    group_mapping = {old: f"g{i}" for i, old in enumerate(set(group_numbers))}
+    for old, new in group_mapping.items():
+        regex = regex.replace(old, new)
+    return regex
+
+
+def normalize_exclude(d: dict) -> dict:
+    d["exclude"] = [normalize_group_numbers(regex) for regex in d["exclude"]]
+    return d
 
 
 @pytest.fixture

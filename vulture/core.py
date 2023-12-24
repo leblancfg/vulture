@@ -10,7 +10,7 @@ from vulture import lines
 from vulture import noqa
 from vulture import utils
 from vulture.config import InputError, make_config
-from vulture.utils import ExitCode
+from vulture.utils import ExitCode, prepare_pattern
 
 
 DEFAULT_CONFIDENCE = 60
@@ -55,12 +55,14 @@ def _is_special_name(name):
 
 def _match(name, patterns, case=True, regex=False):
     if regex:
-        # 0 flag equals no-op for re.match
-        case_flag = re.IGNORECASE if not case else 0
-        return any(
-            re.match(pattern, str(name), flags=case_flag)
-            for pattern in patterns
-        )
+        # Regex patterns come in pre-compiled from `pathspec`; handle case
+        if case:
+            # (Re-)compile them with the IGNORECASE flag
+            patterns = [
+                re.compile(pattern.pattern, re.IGNORECASE)
+                for pattern in patterns
+            ]
+        return any(re.match(pattern, str(name)) for pattern in patterns)
     else:
         func = fnmatchcase if case else fnmatch
         return any(func(name, pattern) for pattern in patterns)
@@ -265,20 +267,16 @@ class Vulture(ast.NodeVisitor):
                 handle_syntax_error(err)
 
     def scavenge(self, paths, exclude=None, regex=False):
-        def prepare_pattern(pattern):
-            if not any(char in pattern for char in "*?["):
-                pattern = f"*{pattern}*"
-            return pattern
 
-        # Red path: existing code calling `scavenge` from public API
-        use_regex = False
+        # Existing code calling `scavenge` from public API will be using
+        # fnmatch exclusion pattern syntax. Convert it to regex.
         if not regex:
             exclude = [prepare_pattern(pat) for pat in (exclude or [])]
             exclude = [fnmatch_translate(pat) for pat in (exclude or [])]
-            use_regex = True
 
+        # From this point on, we're only dealing with regex patterns.
         def exclude_path(path):
-            return _match(path, exclude, case=False, regex=use_regex)
+            return _match(path, exclude, case=False, regex=True)
 
         paths = [Path(path) for path in paths]
 
@@ -746,7 +744,7 @@ def main():
         ignore_names=config["ignore_names"],
         ignore_decorators=config["ignore_decorators"],
     )
-    vulture.scavenge(config["paths"], exclude=config["exclude"])
+    vulture.scavenge(config["paths"], exclude=config["exclude"], regex=True)
     sys.exit(
         vulture.report(
             min_confidence=config["min_confidence"],

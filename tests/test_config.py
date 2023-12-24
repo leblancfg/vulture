@@ -4,6 +4,7 @@ Unit tests for config file and CLI argument parsing.
 
 from io import BytesIO
 from textwrap import dedent
+from unittest.mock import patch
 
 import pytest
 
@@ -12,9 +13,12 @@ from vulture.config import (
     _check_input_config,
     _parse_args,
     _parse_toml,
+    find_gitignore,
     make_config,
     InputError,
 )
+from vulture.utils import fnmatch_to_regex
+from . import normalize_exclude
 
 
 def get_toml_bytes(toml_str: str) -> BytesIO:
@@ -161,7 +165,9 @@ def test_config_merging():
     result = make_config(cliargs, toml)
     expected = dict(
         paths=["cli_path"],
-        exclude=["cli_exclude"],
+        # Specifically for this repo, passing an `exclude` argument means
+        # we don't use this repo's .gitignore but only the `exclude` patterns.
+        exclude=[fnmatch_to_regex("cli_exclude")],  # regex syntax, not fnmatch
         ignore_decorators=["cli_deco"],
         ignore_names=["cli_name"],
         make_whitelist=True,
@@ -169,7 +175,22 @@ def test_config_merging():
         sort_by_size=True,
         verbose=True,
     )
-    assert result == expected
+    # This test was flaking because the auto-generated capture group numbers in
+    # the `exclude` regexes sometime differ.
+    # Normalizing them with auto-incremented ones makes the test deterministic.
+    assert normalize_exclude(result) == normalize_exclude(expected)
+
+
+@patch("vulture.config._parse_gitignore_excludes", return_value=["asdf"])
+@patch("vulture.config._parse_toml", return_value={})
+def test_use_gitignore_if_no_exclude(_, __):
+    """
+    Ensure that the gitignore patterns are used if no exclude is passed.
+    """
+    expected_exclude = ["asdf"]
+    result = make_config(["path1"])["exclude"]
+    assert isinstance(result, list)
+    assert result == expected_exclude
 
 
 def test_config_merging_missing():
@@ -212,7 +233,7 @@ def test_config_merging_toml_paths_only():
     ]
     result = make_config(cliargs, toml)
     assert result["paths"] == ["path1", "path2"]
-    assert result["exclude"] == ["test_*.py"]
+    assert result["exclude"] == [fnmatch_to_regex("test_*.py")]
 
 
 def test_invalid_config_options_output():
@@ -242,3 +263,75 @@ def test_missing_paths():
     """
     with pytest.raises(InputError):
         make_config([])
+
+
+@pytest.fixture
+def gitignore_paths(tmp_path):
+    """
+    root  # Project root
+    ├── .gitignore
+    ├── test
+    └── src  # Git submodule
+        ├── .gitignore
+        └── foo.py
+    """
+
+    def resolve_gitignore(path):
+        gitignore = (path / ".gitignore").resolve()
+        gitignore.touch()
+        return gitignore
+
+    root = tmp_path
+    root_gitignore = resolve_gitignore(root)
+
+    test_dir = root / "test"
+    test_dir.mkdir()
+
+    src_dir = root / "src"
+    src_dir.mkdir()
+
+    # Imagine a git submodule with a .gitignore file
+    src_gitignore = resolve_gitignore(src_dir)
+    src_python = src_dir / "foo.py"
+    src_python.touch()
+    yield root, root_gitignore, test_dir, src_dir, src_gitignore, src_python
+
+
+def test_find_gitignore_root_no_paths(gitignore_paths, monkeypatch):
+    root, root_gitignore, *_ = gitignore_paths
+    monkeypatch.chdir(root)
+    assert find_gitignore() == root_gitignore  # No paths
+
+
+def test_find_gitignore_root_path_from_list(gitignore_paths):
+    root, root_gitignore, *_ = gitignore_paths
+    assert find_gitignore([root]) == root_gitignore  # list[Path]
+    assert find_gitignore([str(root)]) == root_gitignore  # list[str]
+
+
+def test_find_gitignore_from_str_and_path(gitignore_paths):
+    root, root_gitignore, *_ = gitignore_paths
+    assert find_gitignore(root) == root_gitignore  # pathlib.Path
+    assert find_gitignore(str(root)) == root_gitignore  # str
+
+
+def test_find_gitignore_common_parent(gitignore_paths):
+    root_gitignore, test_dir, src_dir, *_ = gitignore_paths[1:]
+    # Test that we find the root gitignore as the common parent
+    assert find_gitignore([src_dir, test_dir]) == root_gitignore
+
+
+def test_find_gitignore_in_a_different_repo_root(gitignore_paths):
+    src_dir, src_gitignore, src_python, *_ = gitignore_paths[3:]
+    # If we only run in the submodule, we should find the submodule gitignore
+    assert find_gitignore([src_dir]) == src_gitignore
+    # Same applies for a specific file in the submodule
+    assert find_gitignore([src_python]) == src_gitignore
+
+
+def test_find_gitignore_relative_path(gitignore_paths, monkeypatch):
+    test_dir, _, src_gitignore, __ = gitignore_paths[2:]
+    # Even if we're outside the submodule, we should still find the submodule
+    # if that's the only path we're given
+    monkeypatch.chdir(test_dir)
+    assert find_gitignore("../src/a.py") == src_gitignore

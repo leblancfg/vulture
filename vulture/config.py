@@ -3,7 +3,10 @@ This module handles retrieval of configuration values from either the
 command-line arguments or the pyproject.toml file.
 """
 import argparse
-import pathlib
+from pathlib import Path
+from typing import Optional, Union
+
+from pathspec import PathSpec
 
 try:
     import tomllib
@@ -11,6 +14,7 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 from .version import __version__
+from .utils import fnmatch_to_regex
 
 #: Possible configuration options and their respective defaults
 DEFAULTS = {
@@ -83,6 +87,62 @@ def _parse_toml(infile):
     settings = data.get("tool", {}).get("vulture", {})
     _check_input_config(settings)
     return settings
+
+
+def find_gitignore(
+    paths: Optional[Union[list[str, Path], str, Path]] = None
+) -> Optional[Path]:
+    """
+    Returns a Path to the closest parent .gitignore.
+
+    That file will come from a directory that's a common parent of all files
+    and directories passed in `paths`. If none is passed, the current working
+    directory is used, and the detected project root will be the closest parent
+    directory with a .gitignore file.
+
+    If no directory in the tree contains a .gitignore, we return None.
+
+    :param paths: A path or list of paths to search for a .gitignore file. If
+        left to the default, defaults to ``sys.argv``.
+
+    :returns: A Path to the closest parent .gitignore, or None if none is
+        found.
+    """
+    # N.B. This function is inspired by `black.find_project_root`
+    if not paths:
+        paths = [Path.cwd().resolve()]
+    # Not in the type hint but input sugar
+    if isinstance(paths, str) or isinstance(paths, Path):
+        paths = [paths]
+
+    # Path constructor is a no-op if the path is already a Path
+    paths = [Path(path).resolve() for path in paths]
+
+    # A list of lists of parents for each 'path'. 'path' is included as a
+    # "parent" of itself if it is a directory
+    path_parents = [
+        list(path.parents) + ([path] if path.is_dir() else [])
+        for path in paths
+    ]
+
+    common_base = max(
+        set.intersection(*(set(parents) for parents in path_parents)),
+        key=lambda path: path.parts,
+    )
+
+    # Find the closest parent that contains a .gitignore, implicitly
+    # returning None if none is found.
+    for path in (common_base, *common_base.parents):
+        gitignore_path = path / ".gitignore"
+        if gitignore_path.is_file():
+            return gitignore_path
+
+
+def _parse_gitignore_excludes(gitignore_path: Path) -> list[str]:
+    """Returns a list of compiled regexes from a .gitignore file.""" ""
+    spec = PathSpec.from_lines("gitwildmatch", gitignore_path.open())
+    # Pre-emptive deduplication
+    return list({pattern.regex for pattern in spec.patterns})
 
 
 def _parse_args(args=None):
@@ -195,7 +255,7 @@ def make_config(argv=None, tomlfile=None):
         config = _parse_toml(tomlfile)
         detected_toml_path = str(tomlfile)
     else:
-        toml_path = pathlib.Path("pyproject.toml").resolve()
+        toml_path = Path("pyproject.toml").resolve()
         if toml_path.is_file():
             with open(toml_path, "rb") as fconfig:
                 config = _parse_toml(fconfig)
@@ -212,6 +272,19 @@ def make_config(argv=None, tomlfile=None):
 
     if detected_toml_path and config["verbose"]:
         print(f"Reading configuration from {detected_toml_path}")
+
+    # Default to root gitignore as exclude patterns
+    # But don't use it if --exclude is passed explicitly
+    if not config["exclude"]:
+        gitignore_path = find_gitignore(config["paths"])
+        if gitignore_path:
+            config["exclude"] = _parse_gitignore_excludes(gitignore_path)
+        else:
+            print("Warning: No .gitignore found in the project tree.")
+    else:
+        # We're passed explicit `exclude` patterns, so we need to translate the
+        # fnmatch patterns to regexes
+        config["exclude"] = [fnmatch_to_regex(p) for p in config["exclude"]]
 
     _check_output_config(config)
 

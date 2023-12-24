@@ -1,5 +1,6 @@
 import ast
 from enum import IntEnum
+import fnmatch
 import pathlib
 import sys
 import tokenize
@@ -109,6 +110,23 @@ def read_file(filename):
             return f.read()
     except (SyntaxError, UnicodeDecodeError) as err:
         raise VultureInputException(err)
+
+
+def prepare_pattern(pattern):
+    """
+    Add wildcards to fnmatch pattern if it doesn't already have wildcard chars.
+    """
+    if not any(char in pattern for char in "*?["):
+        pattern = f"*{pattern}*"
+    return pattern
+
+
+def fnmatch_to_regex(pattern):
+    """
+    Convert a fnmatch pattern to a regular expression.
+    """
+    pattern = prepare_pattern(pattern)
+    return fnmatch.translate(pattern)
 
 
 class LoggingList(list):
