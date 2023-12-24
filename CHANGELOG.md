@@ -2,6 +2,7 @@
 * Bump flake8, flake8-comprehensions and flake8-bugbear (Sebastian Csar, #341).
 * Switch to tomllib/tomli to support heterogeneous arrays (Sebastian Csar, #340).
 * Provide whitelist parity for `MagicMock` and `Mock` (maxrake).
+* Use `.gitignore` by default as source of file exclusion patterns if no `--exclude` patterns are given (leblancfg).
 
 # 2.10 (2023-10-06)
 

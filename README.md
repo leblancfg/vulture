@@ -79,9 +79,13 @@ We collect whitelists for common Python modules and packages in
 
 #### Ignoring files
 
-If you want to ignore a whole file or directory, use the `--exclude` parameter
-(e.g., `--exclude "*settings.py,*/docs/*.py,*/test_*.py,*/.venv/*.py"`). The
-exclude patterns are matched against absolute paths.
+By default, Vulture uses the project's `.gitignore` to know what files and
+folders to ignore.
+
+To overwrite this and ignore a whole file or directory, use the `--exclude`
+parameter (e.g., `--exclude
+"*settings.py,*/docs/*.py,*/test_*.py,*/.venv/*.py"`). The exclude patterns are
+matched against absolute paths.
 
 #### Flake8 noqa comments
 
